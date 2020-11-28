@@ -39,7 +39,6 @@
 # To rebuild project do "make clean" then "make all".
 #----------------------------------------------------------------------------
 
-
 # MCU name
 MCU = atmega328
 
@@ -61,7 +60,8 @@ MCU = atmega328
 #         F_CPU = 16000000
 #         F_CPU = 18432000
 #         F_CPU = 20000000
-F_CPU = 16000000
+# If the system clock is run slow, adjust the bit rate with -B on avrdude args
+F_CPU = 8000000
 
 
 # Output format. (can be srec, ihex, binary)
@@ -296,7 +296,7 @@ AVRDUDE_WRITE_FLASH = -U flash:w:$(TARGET).hex
 
 # This was modified to remove the explicit port due to the windows implementation
 #AVRDUDE_FLAGS = -p $(MCU) -P $(AVRDUDE_PORT) -c $(AVRDUDE_PROGRAMMER)
-AVRDUDE_FLAGS = -p $(MCU) -c $(AVRDUDE_PROGRAMMER) -b 75
+AVRDUDE_FLAGS = -p $(MCU) -c $(AVRDUDE_PROGRAMMER)
 AVRDUDE_FLAGS += $(AVRDUDE_NO_VERIFY)
 AVRDUDE_FLAGS += $(AVRDUDE_VERBOSE)
 AVRDUDE_FLAGS += $(AVRDUDE_ERASE_COUNTER)
