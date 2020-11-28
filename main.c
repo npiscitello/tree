@@ -17,10 +17,18 @@
 
 volatile uint8_t flags = 0;
 #define F_PATTERN_CHANGED 7
+#define F_TIMER0_COMPA    6
+#define F_LED_STATE       5
 
 // pattern switch ISR
 ISR(INT0_vect) {
   flags |= _BV(F_PATTERN_CHANGED);
+}
+
+// timer 0 ISR
+ISR(TIMER0_COMPA_vect) {
+  flags |= _BV(F_TIMER0_COMPA);
+  flags ^= _BV(F_LED_STATE); 
 }
 
 int main(void) {
@@ -49,21 +57,28 @@ int main(void) {
   // this only works b/c the steady/pattern switch is also
   // the power switch (SPDT w/ off position)
   if( PIND & _BV(PIN_MODE) ) {
-    // steady on mode
-    // we need to poll the switch the first time through
-    flags |= _BV(F_PATTERN_CHANGED);
+    // steady on mode - each led is on 50% DC
+    // let's shoot for a frequency of 1kHz
+    // CTC mode
+    TCCR0A = _BV(WGM01);
+    // compare of 125 will reset the timer at 1kHz
+    OCR0A = 125;
+    // enable interrupts
+    TIMSK0 = _BV(OCIE0A);
+    // sys/64 (125kHz tick @ 8MHz sys clock)
+    TCCR0B = _BV(CS01) | _BV(CS00);
+
     while( 1 ) {
-      if( flags & _BV(F_PATTERN_CHANGED) ) {
-        flags &= ~_BV(F_PATTERN_CHANGED);
+      if( flags & _BV(F_TIMER0_COMPA) ) {
+        flags &= ~_BV(F_TIMER0_COMPA);
         // LED outputs CANNOT be on simultaneously
         PORTD &= ~_BV(PORT_LEDA) & ~_BV(PORT_LEDB);
-        if( PIND & _BV(PIN_PATTERN) ) {
+        if( flags & _BV(F_LED_STATE) ) {
           PORTD |= _BV(PORT_LEDA);
         } else {
           PORTD |= _BV(PORT_LEDB);
         }
       }
-      // go to power-down mode (see datasheet para 10.5)
     }
 
   } else {
