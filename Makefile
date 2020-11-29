@@ -61,7 +61,11 @@ MCU = atmega328
 #         F_CPU = 18432000
 #         F_CPU = 20000000
 # If the system clock is run slow, adjust the bit rate with -B on avrdude args
-F_CPU = 8000000
+F_CPU = 2000000
+# AVRDUDE bitclock, floating point in microseconds
+# 1 is suitable for ~4MHz clock speed
+# Adjust as needed for lower/higher clocks, or comment for default
+AVRDUDE_BITCLOCK = 2
 
 
 # Output format. (can be srec, ihex, binary)
@@ -296,8 +300,7 @@ AVRDUDE_WRITE_FLASH = -U flash:w:$(TARGET).hex
 
 # This was modified to remove the explicit port due to the windows implementation
 #AVRDUDE_FLAGS = -p $(MCU) -P $(AVRDUDE_PORT) -c $(AVRDUDE_PROGRAMMER)
-AVRDUDE_FLAGS = -p $(MCU) -c $(AVRDUDE_PROGRAMMER)
-#AVRDUDE_FLAGS = -p $(MCU) -c $(AVRDUDE_PROGRAMMER) -B 70
+AVRDUDE_FLAGS = -p $(MCU) -c $(AVRDUDE_PROGRAMMER) -B $(AVRDUDE_BITCLOCK)
 AVRDUDE_FLAGS += $(AVRDUDE_NO_VERIFY)
 AVRDUDE_FLAGS += $(AVRDUDE_VERBOSE)
 AVRDUDE_FLAGS += $(AVRDUDE_ERASE_COUNTER)

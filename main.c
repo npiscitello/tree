@@ -29,6 +29,7 @@ volatile uint8_t flags = 0x00;
 #define F_TIMER1_TRIG     5
 #define F_ADC_DONE        4
 #define F_LED_BANK        3
+#define F_PATTERN_BANK    2
 
 volatile uint8_t bright_val = 0;
 volatile uint8_t delay_val = 0;
@@ -40,9 +41,17 @@ ISR(INT0_vect) {
 }
 ISR(INT1_vect, ISR_ALIASOF(INT0_vect));
 
-// timer 0 ISR - set flag for pattern/steady loops
+// timer 0 ISR - swap LED banks
 ISR(TIMER0_OVF_vect) {
-  flags |= _BV(F_TIMER0_OVF);
+  // We're splitting time between the LED strings - each string does one
+  // on/off cycle then spends an entire PWM period off while the other
+  // string does its cycle. This effectively halves the PWM freq.
+  if( flags & _BV(F_LED_BANK) ) {
+    TCCR0A = (TCCR0A & 0x0F) | _BV(COM0B1);
+  } else {
+    TCCR0A = (TCCR0A & 0x0F) | _BV(COM0A1);
+  }
+  flags ^= _BV(F_LED_BANK);
 }
 
 // timer 1 ISR - set flag for pattern loop
@@ -68,15 +77,6 @@ ISR(ADC_vect) {
   *adc_reg = ADCH;
 }
 
-void set_led_bank( uint8_t led_bank ) {
-  // LED outputs CANNOT be on simultaneously
-  if( led_bank ) {
-    TCCR0A = (TCCR0A & 0x0F) | _BV(COM0B1);
-  } else {
-    TCCR0A = (TCCR0A & 0x0F) | _BV(COM0A1);
-  }
-}
-
 int main(void) {
   // set up inputs/outputs
   // main LEDs: output, OC0A/OC0B (PD5/PD6)
@@ -85,9 +85,9 @@ int main(void) {
   DDRD = _BV(DD_LEDA) | _BV(DD_LEDB);
   PORTD = _BV(PORT_FADE) | _BV(PORT_BLINK);
 
-  // make double sure the clock is what we expect it to be
-  //CLKPR = _BV(CLKPCE);
-  //CLKPR = 0x00;
+  // drop the clock to 2MHz to support a better PWM freq
+  CLKPR = _BV(CLKPCE);
+  CLKPR = _BV(CLKPS1);
 
   // turn on what we need, turn off what we don't
   //  - Timer 0: output PWM
@@ -103,16 +103,25 @@ int main(void) {
 
   // set up ADC in oneshot mode and left adjust the result
   ADMUX = _BV(ADLAR);
+  // 8MHz System Clock
   // sys/64, 125kHz tick
-  ADCSRA = _BV(ADIE) | _BV(ADPS2) | _BV(ADPS1);
+  //ADCSRA = _BV(ADIE) | _BV(ADPS2) | _BV(ADPS1);
+  // 2MHz System Clock
+  // sys/16, 125kHz tick
+  ADCSRA = _BV(ADIE) | _BV(ADPS2);
   ADCSRA |= _BV(ADEN);
 
   // set up PWM on timer 0
   // fast PWM, 256 bit resolution
   TCCR0A = _BV(WGM01) | _BV(WGM00);
-  // sys/64, 125kHz clock, ~488Hz PWM freq
-  TCCR0B = _BV(CS01) | _BV(CS00);
-  //TCCR0B = _BV(CS01);               // sys/8
+  // 8MHz System Clock
+  // sys/64, 125kHz clock, ~488Hz PWM freq, ~244 effective PWM freq
+  // (see ISR, PWM freq is halved because we split time between banks)
+  //TCCR0B = _BV(CS01) | _BV(CS00);
+  // 2MHz System Clock
+  // sys/8, 250kHz clock, ~976Hz PWM freq, ~488 effective PWM freq
+  // (see ISR, PWM freq is halved because we split time between banks)
+  TCCR0B = _BV(CS01);               // sys/8
   //TCCR0B = _BV(CS02);               // sys/256
   //TCCR0B = _BV(CS02) | _BV(CS00);   // sys/1024
   // interrupt on every PWM cycle
@@ -127,14 +136,22 @@ int main(void) {
   TCCR2A = _BV(WGM21);
   // enable interrupts
   TIMSK2 = _BV(OCIE2A);
+  // 8MHz System Clock
   // sys/64, OCR2A of 63 yields ~2000 triggers/sec
   // At the ADC clock of 125kHz, that allows 63 ADC clocks per trigger
-  OCR2A = 63;
-  TCCR2B = _BV(CS22);
+  //OCR2A = 63;
+  //TCCR2B = _BV(CS22);
+  // 2MHz System Clock
+  // sys/32, 62.5kHz tick, OCR2A of 31 yields ~2016 triggers/sec
+  // At the ADC clock of 125kHz, that allows 62 ADC clocks per trigger
+  OCR2A = 31;
+  TCCR2B = _BV(CS21) | _BV(CS20);
 
   while( 1 ) {
 // fade setup //
     if( !(PIND & _BV(PIN_FADE)) ) {
+      // timer 1 resets on every brightness level change, so we run it fast
+      // CTC, sys/
 
 // fade loop //
       while(1) {
@@ -143,19 +160,24 @@ int main(void) {
 
 // blink setup //
     } else if( !(PIND & _BV(PIN_BLINK)) ) {
+      // 8MHz System Clock
       // timer 1 resets when the LED bank should switch, so we run it very slow
       // CTC, sys/1024, 7812.5Hz tick, max delay possible 8.39 secs
-      TCCR1B = _BV(WGM12) | _BV(CS12) | _BV(CS10);
+      //TCCR1B = _BV(WGM12) | _BV(CS12) | _BV(CS10);
+      // 2MHz System Clock
+      // timer 1 resets when the LED bank should switch, so we run it very slow
+      // CTC, sys/256, 7812.5Hz tick, max delay possible 8.39 secs
+      TCCR1B = _BV(WGM12) | _BV(CS12);
       // turn on right away
       flags |= _BV(F_TIMER1_TRIG);
+      // aliases to the reg currently doing its blink duty
+      volatile uint8_t* on_reg = &OCR0A;
 
 // blink loop //
       while(1) {
         if( flags & _BV(F_ADC_DONE) ) {
           flags &= ~_BV(F_ADC_DONE);
-          // cannot be zero or it results in a headache-inducing strobe
-          OCR0A = bright_val | 0x01;
-          OCR0B = bright_val | 0x01;
+          *on_reg = bright_val;
           OCR1A = BLINK_DELAY_MIN + 
             (((BLINK_DELAY_MAX - BLINK_DELAY_MIN) /
               (uint16_t)256) * (uint16_t)delay_val);
@@ -167,30 +189,27 @@ int main(void) {
         }
         if( flags & _BV(F_TIMER1_TRIG) ) {
           flags &= ~_BV(F_TIMER1_TRIG);
-          flags ^= _BV(F_LED_BANK);
-          set_led_bank((flags & _BV(F_LED_BANK)) >> F_LED_BANK);
+          flags ^= _BV(F_PATTERN_BANK);
+          if( flags & _BV(F_PATTERN_BANK) ) {
+            OCR0A = 0x00;
+            on_reg = &OCR0B;
+          } else {
+            on_reg = &OCR0A;
+            OCR0B = 0x00;
+          }
         }
         if( flags & _BV(F_MODE_CHANGED) ) break;
       }
 
 // steady on setup //
     } else {
-      // We're splitting time between the LED strings - each string does one
-      // on/off cycle then spends an entire PWM period off while the other
-      // string does its cycle. This effectively halves the PWM freq.
 
 // steady on loop //
       while(1) {
         if( flags & _BV(F_ADC_DONE) ) {
           flags &= ~_BV(F_ADC_DONE);
-          // cannot be zero or it results in a headache-inducing strobe
-          OCR0A = bright_val | 0x01;
-          OCR0B = bright_val | 0x01;
-        }
-        if( flags & _BV(F_TIMER0_OVF) ) {
-          flags &= ~_BV(F_TIMER0_OVF);
-          flags ^= _BV(F_LED_BANK);
-          set_led_bank((flags & _BV(F_LED_BANK)) >> F_LED_BANK);
+          OCR0A = bright_val;
+          OCR0B = bright_val;
         }
         if( flags & _BV(F_MODE_CHANGED) ) break;
       }
