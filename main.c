@@ -4,10 +4,10 @@
 // all tick calcs assume 8MHz clock
 
 // min/max number of ticks for timer1
-#define BLINK_DELAY_MIN   (7812.5*0.75) // 0.75 sec/reset
-#define BLINK_DELAY_MAX   (7812.5*2)    // 2 sec/reset
-#define FADE_DELAY_MIN    (7812.5*0.75) // 0.75 sec/reset
-#define FADE_DELAY_MAX    (7812.5*2)    // 2 sec/reset
+#define BLINK_DELAY_MIN   (7812.5*0.075)  // 0.075 sec/reset
+#define BLINK_DELAY_MAX   (7812.5*2)      // 2 sec/reset
+#define FADE_DELAY_MIN    (7812.5*0.075)  // 0.75 sec/reset
+#define FADE_DELAY_MAX    (7812.5*2)      // 2 sec/reset
 
 #define PORT_LEDB     PORTD5
 #define DD_LEDB       DDD5
@@ -34,25 +34,21 @@ volatile uint8_t bright_val = 0;
 volatile uint8_t delay_val = 0;
 volatile uint8_t* adc_reg = &bright_val;
 
-/*
 // INT0/INT1 ISRs - mode switch changed
 ISR(INT0_vect) {
   flags |= _BV(F_MODE_CHANGED);
 }
 ISR(INT1_vect, ISR_ALIASOF(INT0_vect));
-*/
 
 // timer 0 ISR - set flag for pattern/steady loops
 ISR(TIMER0_OVF_vect) {
   flags |= _BV(F_TIMER0_OVF);
 }
 
-/*
 // timer 1 ISR - set flag for pattern loop
 ISR(TIMER1_COMPA_vect) {
   flags |= _BV(F_TIMER1_TRIG);
 }
-*/
 
 // timer 2 ISR - swap ADC regs and trigger an ADC conversion
 ISR(TIMER2_COMPA_vect) {
@@ -89,6 +85,10 @@ int main(void) {
   DDRD = _BV(DD_LEDA) | _BV(DD_LEDB);
   PORTD = _BV(PORT_FADE) | _BV(PORT_BLINK);
 
+  // make double sure the clock is what we expect it to be
+  //CLKPR = _BV(CLKPCE);
+  //CLKPR = 0x00;
+
   // turn on what we need, turn off what we don't
   //  - Timer 0: output PWM
   //  - Timer 1: blink/fade delay timing
@@ -97,8 +97,8 @@ int main(void) {
   PRR = ~_BV(PRTIM0) & ~_BV(PRTIM1) & ~_BV(PRTIM2) & ~_BV(PRADC);
 
   // enable interrupts for switch, timers, and ADC
-  //EICRA = _BV(ISC10) | _BV(ISC00);
-  //EIMSK = _BV(INT1) | _BV(INT0);
+  EICRA = _BV(ISC10) | _BV(ISC00);
+  EIMSK = _BV(INT1) | _BV(INT0);
   asm("sei");
 
   // set up ADC in oneshot mode and left adjust the result
@@ -110,34 +110,31 @@ int main(void) {
   // set up PWM on timer 0
   // fast PWM, 256 bit resolution
   TCCR0A = _BV(WGM01) | _BV(WGM00);
+  // sys/64, 125kHz clock, ~488Hz PWM freq
+  TCCR0B = _BV(CS01) | _BV(CS00);
+  //TCCR0B = _BV(CS01);               // sys/8
+  //TCCR0B = _BV(CS02);               // sys/256
+  //TCCR0B = _BV(CS02) | _BV(CS00);   // sys/1024
+  // interrupt on every PWM cycle
+  TIMSK0 |= _BV(TOIE0);
 
   // set up pattern timing on timer1
   // compare match interrupt
-  //TIMSK1 = _BV(OCIE1A);
+  TIMSK1 = _BV(OCIE1A);
 
   // set up ADC switching on timer 2
   // CTC
   TCCR2A = _BV(WGM21);
   // enable interrupts
   TIMSK2 = _BV(OCIE2A);
-  // sys/64, OCR2A of 125 yields ~1000 triggers/sec
-  // At the ADC clock of 125kHz, that allows 125 ADC clocks per trigger
-  OCR2A = 125;
+  // sys/64, OCR2A of 63 yields ~2000 triggers/sec
+  // At the ADC clock of 125kHz, that allows 63 ADC clocks per trigger
+  OCR2A = 63;
   TCCR2B = _BV(CS22);
 
   while( 1 ) {
-    /*
 // fade setup //
     if( !(PIND & _BV(PIN_FADE)) ) {
-      // This is sticking to one string at a time (they will be switching, but
-      // slow enough that flickering isn't a problem). Therefore, we can use
-      // slower PWM.
-      // sys/8, 1MHz tick, ~3.9kHz PWM freq
-      TCCR0B = _BV(CS01);
-      // we don't want any timer interrupts
-      TIMSK0 = 0x00;
-      OCR0A = 0x00;
-      OCR0B = 0x00;
 
 // fade loop //
       while(1) {
@@ -146,14 +143,7 @@ int main(void) {
 
 // blink setup //
     } else if( !(PIND & _BV(PIN_BLINK)) ) {
-      // This is sticking to one string at a time (they will be switching, but
-      // slow enough that flickering isn't a problem). Therefore, we can use
-      // slower PWM.
-      // sys/8, 1MHz tick, ~3.9kHz PWM freq
-      TCCR0B = _BV(CS01);
-      // we don't want any timer interrupts
-      TIMSK0 = 0x00;
-      // timer resets when the LED bank should switch, so we run it very slow
+      // timer 1 resets when the LED bank should switch, so we run it very slow
       // CTC, sys/1024, 7812.5Hz tick, max delay possible 8.39 secs
       TCCR1B = _BV(WGM12) | _BV(CS12) | _BV(CS10);
       // turn on right away
@@ -163,8 +153,9 @@ int main(void) {
       while(1) {
         if( flags & _BV(F_ADC_DONE) ) {
           flags &= ~_BV(F_ADC_DONE);
-          OCR0A = bright_val;
-          OCR0B = bright_val;
+          // cannot be zero or it results in a headache-inducing strobe
+          OCR0A = bright_val | 0x01;
+          OCR0B = bright_val | 0x01;
           OCR1A = BLINK_DELAY_MIN + 
             (((BLINK_DELAY_MAX - BLINK_DELAY_MIN) /
               (uint16_t)256) * (uint16_t)delay_val);
@@ -184,33 +175,28 @@ int main(void) {
 
 // steady on setup //
     } else {
-    */
       // We're splitting time between the LED strings - each string does one
       // on/off cycle then spends an entire PWM period off while the other
       // string does its cycle. This effectively halves the PWM freq.
-      // sys/8, 1MHz tick, ~3.9kHz PWM freq, ~2.0kHz effective PWM freq
-      //TCCR0B = _BV(CS01);
-      TCCR0B = _BV(CS01) | _BV(CS00);
-      //TCCR0B = _BV(CS02);
-      //TCCR0B = _BV(CS02) | _BV(CS00);
-      // interrupt once per PWM cycle so we can swap banks
-      TIMSK0 |= _BV(TOIE0);
 
 // steady on loop //
       while(1) {
-        OCR0A = bright_val;
-        OCR0B = bright_val;
+        if( flags & _BV(F_ADC_DONE) ) {
+          flags &= ~_BV(F_ADC_DONE);
+          // cannot be zero or it results in a headache-inducing strobe
+          OCR0A = bright_val | 0x01;
+          OCR0B = bright_val | 0x01;
+        }
         if( flags & _BV(F_TIMER0_OVF) ) {
           flags &= ~_BV(F_TIMER0_OVF);
           flags ^= _BV(F_LED_BANK);
-          // this is always passing 0...hmmmmmmmmm
           set_led_bank((flags & _BV(F_LED_BANK)) >> F_LED_BANK);
         }
-        //if( flags & _BV(F_MODE_CHANGED) ) break;
+        if( flags & _BV(F_MODE_CHANGED) ) break;
       }
     }
-    //flags &= ~_BV(F_MODE_CHANGED);
-//  }
+    flags &= ~_BV(F_MODE_CHANGED);
+  }
 
   // we should never get here!
   return 0;
