@@ -4,10 +4,10 @@
 // all tick calcs assume 8MHz clock
 
 // min/max number of ticks for timer1
-#define BLINK_DELAY_MIN   (7812.5*0.075)  // 0.075 sec/reset
-#define BLINK_DELAY_MAX   (7812.5*2)      // 2 sec/reset
-#define FADE_DELAY_MIN    (7812.5*0.075)  // 0.75 sec/reset
-#define FADE_DELAY_MAX    (7812.5*2)      // 2 sec/reset
+#define BLINK_DELAY_MIN   (7812.5 * 0.075)        // 0.075 sec/blink
+#define BLINK_DELAY_MAX   (7812.5 * 2)            // 2 sec/blink
+#define FADE_DELAY_MIN    (31250 * (0.5 / 256))   // 0.5 sec/fade
+#define FADE_DELAY_MAX    (31250 * (4 / 256))     // 4 sec/fade
 
 #define PORT_LEDB     PORTD5
 #define DD_LEDB       DDD5
@@ -25,11 +25,10 @@
 
 volatile uint8_t flags = 0x00;
 #define F_MODE_CHANGED    7
-#define F_TIMER0_OVF      6
-#define F_TIMER1_TRIG     5
-#define F_ADC_DONE        4
-#define F_LED_BANK        3
-#define F_PATTERN_BANK    2
+#define F_TIMER1_TRIG     6
+#define F_ADC_DONE        5
+#define F_LED_BANK        4
+#define F_PATTERN_BANK    3
 
 volatile uint8_t bright_val = 0;
 volatile uint8_t delay_val = 0;
@@ -86,6 +85,7 @@ int main(void) {
   PORTD = _BV(PORT_FADE) | _BV(PORT_BLINK);
 
   // drop the clock to 2MHz to support a better PWM freq
+  // test compatibility on final board;
   CLKPR = _BV(CLKPCE);
   CLKPR = _BV(CLKPS1);
 
@@ -150,18 +150,32 @@ int main(void) {
   while( 1 ) {
 // fade setup //
     if( !(PIND & _BV(PIN_FADE)) ) {
-      // timer 1 resets on every brightness level change, so we run it fast
-      // CTC, sys/
+      // 2MHz System Clock
+      // timer 1 resets on every brightness level change (256 per fade), 
+      // so we run it fast
+      // CTC, sys/64, 31.25kHz tick, max delay possible 0.5 sec (537 sec fade)
+      TCCR1B = _BV(WGM12) | _BV(CS11) | _BV(CS10);
+      // turn on right away
+      flags |= _BV(F_TIMER1_TRIG);
 
 // fade loop //
       while(1) {
+        if( flags & _BV(F_ADC_DONE) ) {
+          flags &= ~_BV(F_ADC_DONE);
+          // adjust brightness
+        }
+        if( flags & _BV(F_TIMER1_TRIG) ) {
+          flags &= ~_BV(F_TIMER1_TRIG);
+          // constant rate fade - if peak brightness is reduced, fade will take
+          // less time to complete
+        }
         if( flags & _BV(F_MODE_CHANGED) ) break;
       }
 
 // blink setup //
     } else if( !(PIND & _BV(PIN_BLINK)) ) {
       // 8MHz System Clock
-      // timer 1 resets when the LED bank should switch, so we run it very slow
+      // timer 1 resets when the LED bank should switch, so we run it slow
       // CTC, sys/1024, 7812.5Hz tick, max delay possible 8.39 secs
       //TCCR1B = _BV(WGM12) | _BV(CS12) | _BV(CS10);
       // 2MHz System Clock
