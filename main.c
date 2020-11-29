@@ -28,7 +28,7 @@ volatile uint8_t flags = 0x00;
 #define F_TIMER1_TRIG     6
 #define F_ADC_DONE        5
 #define F_LED_BANK        4
-#define F_PATTERN_BANK    3
+#define F_PATTERN_BIT     3
 
 volatile uint8_t bright_val = 0;
 volatile uint8_t delay_val = 0;
@@ -157,17 +157,29 @@ int main(void) {
       TCCR1B = _BV(WGM12) | _BV(CS11) | _BV(CS10);
       // turn on right away
       flags |= _BV(F_TIMER1_TRIG);
+      // store fade state
+      uint8_t fade_state = 0;
 
 // fade loop //
       while(1) {
-        if( flags & _BV(F_ADC_DONE) ) {
-          flags &= ~_BV(F_ADC_DONE);
-          // adjust brightness
-        }
+        bright_val = 255;
         if( flags & _BV(F_TIMER1_TRIG) ) {
           flags &= ~_BV(F_TIMER1_TRIG);
           // constant rate fade - if peak brightness is reduced, fade will take
           // less time to complete
+          // calculate bank brightnesses based on fade state and direction
+          if( flags & _BV(F_PATTERN_BIT) ) {
+            OCR0A = bright_val - fade_state;
+            OCR0B = fade_state;
+          } else {
+            OCR0A = fade_state;
+            OCR0B = bright_val - fade_state;
+          }
+          // increment fade state until it reaches full brightness, then reverse
+          if( fade_state++ >= bright_val ) {
+            flags ^= _BV(F_PATTERN_BIT);
+            fade_state = 0;
+          }
         }
         if( flags & _BV(F_MODE_CHANGED) ) break;
       }
@@ -203,8 +215,8 @@ int main(void) {
         }
         if( flags & _BV(F_TIMER1_TRIG) ) {
           flags &= ~_BV(F_TIMER1_TRIG);
-          flags ^= _BV(F_PATTERN_BANK);
-          if( flags & _BV(F_PATTERN_BANK) ) {
+          flags ^= _BV(F_PATTERN_BIT);
+          if( flags & _BV(F_PATTERN_BIT) ) {
             OCR0A = 0x00;
             on_reg = &OCR0B;
           } else {
