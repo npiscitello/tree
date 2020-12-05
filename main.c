@@ -1,13 +1,16 @@
 #include "avr/io.h"
 #include "avr/interrupt.h"
 
-// all tick calcs assume 8MHz clock
-
 // min/max number of ticks for timer1
-#define BLINK_DELAY_MIN   (7812.5 * 0.075)        // 0.075 sec/blink
-#define BLINK_DELAY_MAX   (7812.5 * 2)            // 2 sec/blink
-#define FADE_DELAY_MIN    (31250 * (0.5 / 256))   // 0.5 sec/fade
-#define FADE_DELAY_MAX    (31250 * (4 / 256))     // 4 sec/fade
+#define BLINK_DELAY_MIN   (7812.5 * 0.075)  // 0.075 sec/blink
+#define BLINK_DELAY_MAX   (7812.5 * 2)      // 2 sec/blink
+#define FADE_DELAY_MIN    20                // 0.5 sec/fade
+#define FADE_DELAY_MULT   2                 // delay value multiplier - integer
+                                            // division was causing problems
+                                            // with auto-calculating it b/c the
+                                            // tick counts are so low
+#define DELAY_RES         (uint16_t)256     // number of possible values
+                                            // for the delay variable
 
 #define PORT_LEDB     PORTD5
 #define DD_LEDB       DDD5
@@ -30,9 +33,15 @@ volatile uint8_t flags = 0x00;
 #define F_LED_BANK        4
 #define F_PATTERN_BIT     3
 
-volatile uint8_t bright_val = 0;
+// PWM is inverting, so 0 = full bright, 255 = off
+#define BRIGHT_OFF  255
+volatile uint8_t bright_val = BRIGHT_OFF;
 volatile uint8_t delay_val = 0;
 volatile uint8_t* adc_reg = &bright_val;
+
+// LED bank brightness buffers for TIMER0 ISR
+volatile uint8_t ledA_bright = BRIGHT_OFF;
+volatile uint8_t ledB_bright = BRIGHT_OFF;
 
 // INT0/INT1 ISRs - mode switch changed
 ISR(INT0_vect) {
@@ -45,10 +54,14 @@ ISR(TIMER0_OVF_vect) {
   // We're splitting time between the LED strings - each string does one
   // on/off cycle then spends an entire PWM period off while the other
   // string does its cycle. This effectively halves the PWM freq.
+  // We use inverting mode so the bank doesn't get turned on momentarily during
+  // the swap.
   if( flags & _BV(F_LED_BANK) ) {
-    TCCR0A = (TCCR0A & 0x0F) | _BV(COM0B1);
+    OCR0A = BRIGHT_OFF;
+    OCR0B = ledB_bright;
   } else {
-    TCCR0A = (TCCR0A & 0x0F) | _BV(COM0A1);
+    OCR0A = ledA_bright;
+    OCR0B = BRIGHT_OFF;
   }
   flags ^= _BV(F_LED_BANK);
 }
@@ -112,8 +125,9 @@ int main(void) {
   ADCSRA |= _BV(ADEN);
 
   // set up PWM on timer 0
-  // fast PWM, 256 bit resolution
-  TCCR0A = _BV(WGM01) | _BV(WGM00);
+  // fast PWM, 256 bit resolution, both outputs inverting
+  TCCR0A = _BV(WGM01) | _BV(WGM00) |
+    _BV(COM0A1) | _BV(COM0A0) | _BV(COM0B1) | _BV(COM0B0);
   // 8MHz System Clock
   // sys/64, 125kHz clock, ~488Hz PWM freq, ~244 effective PWM freq
   // (see ISR, PWM freq is halved because we split time between banks)
@@ -122,8 +136,6 @@ int main(void) {
   // sys/8, 250kHz clock, ~976Hz PWM freq, ~488 effective PWM freq
   // (see ISR, PWM freq is halved because we split time between banks)
   TCCR0B = _BV(CS01);               // sys/8
-  //TCCR0B = _BV(CS02);               // sys/256
-  //TCCR0B = _BV(CS02) | _BV(CS00);   // sys/1024
   // interrupt on every PWM cycle
   TIMSK0 |= _BV(TOIE0);
 
@@ -159,27 +171,44 @@ int main(void) {
       flags |= _BV(F_TIMER1_TRIG);
       // store fade state
       uint8_t fade_state = 0;
+      // cache bright_val to prevent overflow errors
+      uint8_t bright_val_cache = 0;
 
 // fade loop //
       while(1) {
-        bright_val = 255;
+        if( flags & _BV(F_ADC_DONE) ) {
+          flags &= ~_BV(F_ADC_DONE);
+          // becuase the tick counts for this are so low, integer division like
+          // we use in the blink calc causes unacceptable errors
+          OCR1A = FADE_DELAY_MIN + FADE_DELAY_MULT * (uint16_t)delay_val;
+          if( (uint16_t)TCNT1 > (uint16_t)OCR1A ) {
+            // we've missed the compare, fake a match and start over
+            flags |= _BV(F_TIMER1_TRIG);
+            TCNT1 = 0x0000;
+          }
+        }
         if( flags & _BV(F_TIMER1_TRIG) ) {
           flags &= ~_BV(F_TIMER1_TRIG);
-          // constant rate fade - if peak brightness is reduced, fade will take
-          // less time to complete
+          // <TODO>
+          // constant time fade - fade takes the same amount of time regardless
+          // of brightness, meaning slow, dim fades will have low resolution
           // calculate bank brightnesses based on fade state and direction
-          if( flags & _BV(F_PATTERN_BIT) ) {
-            OCR0A = bright_val - fade_state;
-            OCR0B = fade_state;
-          } else {
-            OCR0A = fade_state;
-            OCR0B = bright_val - fade_state;
-          }
-          // increment fade state until it reaches full brightness, then reverse
-          if( fade_state++ >= bright_val ) {
+          // right now, it's a constant rate fade
+          // calculate brightness and fade direction
+          bright_val_cache = bright_val;
+          if( fade_state <= bright_val_cache) {
             flags ^= _BV(F_PATTERN_BIT);
-            fade_state = 0;
+            fade_state = BRIGHT_OFF;
           }
+          // flashing happens when ledA_bright is full on (0)
+          if( flags & _BV(F_PATTERN_BIT) ) {
+            ledA_bright = (BRIGHT_OFF - fade_state) + bright_val_cache;
+            ledB_bright = fade_state;
+          } else {
+            ledA_bright = fade_state;
+            ledB_bright = (BRIGHT_OFF - fade_state) + bright_val_cache;
+          }
+          fade_state--;
         }
         if( flags & _BV(F_MODE_CHANGED) ) break;
       }
@@ -197,7 +226,7 @@ int main(void) {
       // turn on right away
       flags |= _BV(F_TIMER1_TRIG);
       // aliases to the reg currently doing its blink duty
-      volatile uint8_t* on_reg = &OCR0A;
+      volatile uint8_t* on_reg = &ledA_bright;
 
 // blink loop //
       while(1) {
@@ -206,7 +235,7 @@ int main(void) {
           *on_reg = bright_val;
           OCR1A = BLINK_DELAY_MIN + 
             (((BLINK_DELAY_MAX - BLINK_DELAY_MIN) /
-              (uint16_t)256) * (uint16_t)delay_val);
+              DELAY_RES) * (uint16_t)delay_val);
           if( (uint16_t)TCNT1 > (uint16_t)OCR1A ) {
             // we've missed the compare, fake a match and start over
             flags |= _BV(F_TIMER1_TRIG);
@@ -217,11 +246,11 @@ int main(void) {
           flags &= ~_BV(F_TIMER1_TRIG);
           flags ^= _BV(F_PATTERN_BIT);
           if( flags & _BV(F_PATTERN_BIT) ) {
-            OCR0A = 0x00;
-            on_reg = &OCR0B;
+            ledA_bright = BRIGHT_OFF;
+            on_reg = &ledB_bright;
           } else {
-            on_reg = &OCR0A;
-            OCR0B = 0x00;
+            on_reg = &ledA_bright;
+            ledB_bright = BRIGHT_OFF;
           }
         }
         if( flags & _BV(F_MODE_CHANGED) ) break;
@@ -234,8 +263,8 @@ int main(void) {
       while(1) {
         if( flags & _BV(F_ADC_DONE) ) {
           flags &= ~_BV(F_ADC_DONE);
-          OCR0A = bright_val;
-          OCR0B = bright_val;
+          ledA_bright = bright_val;
+          ledB_bright = bright_val;
         }
         if( flags & _BV(F_MODE_CHANGED) ) break;
       }
