@@ -1,5 +1,6 @@
 #include "avr/io.h"
 #include "avr/interrupt.h"
+#include "math.h"
 
 // min/max number of ticks for timer1
 #define BLINK_DELAY_MIN   (7812.5 * 0.075)  // 0.075 sec/blink
@@ -12,10 +13,6 @@
 #define FADE_TMR_FREQ     31250             // timer1 freq for fade ops
 #define DELAY_RES         (uint16_t)256     // number of possible values
                                             // for the delay variable
-
-// fade params - we fade slower at dimmer values and faster at brighter ones
-#define FADE_CUTOFF_LO  0.33;
-#define FADE_CUTOFF_HI  0.67;
 
 #define PORT_LEDB     PORTD5
 #define DD_LEDB       DDD5
@@ -175,23 +172,21 @@ int main(void) {
       // turn on right away
       flags |= _BV(F_TIMER1_TRIG);
       // store fade states
+      uint8_t total_steps = 0;
       uint8_t fade_step = 0;
-      // <TODO> fade slower at lower brightnesses and faster at higher ones
-      //uint8_t fade_up_val = 0;
-      //uint8_t fade_dn_val = 0;
-      // cache bright_val to prevent overflow errors
-      uint8_t bright_val_cache = 0;
 
 // fade loop //
       while(1) {
         if( flags & _BV(F_ADC_DONE) ) {
           flags &= ~_BV(F_ADC_DONE);
+          // total number of fade steps is based off of the peak brightness
+          total_steps = BRIGHT_OFF - bright_val;
           // Constant time fade - fade takes the same amount of time regardless
           // of brightness, meaning slow, dim fades will have low resolution.
           // This means the number of ticks per fade step is variable.
           OCR1A = FADE_TMR_FREQ * 
             (FADE_DURATION_MIN + ((uint16_t)delay_val * FADE_DELAY_MULT)) / 
-            (BRIGHT_OFF - bright_val);
+            total_steps;
           if( (uint16_t)TCNT1 > (uint16_t)OCR1A ) {
             // we've missed the compare, fake a match and start over
             flags |= _BV(F_TIMER1_TRIG);
@@ -200,22 +195,37 @@ int main(void) {
         }
         if( flags & _BV(F_TIMER1_TRIG) ) {
           flags &= ~_BV(F_TIMER1_TRIG);
-          // calculate brightness and fade direction
-          bright_val_cache = bright_val;
-          if( fade_step <= bright_val_cache) {
+          if( fade_step >= total_steps) {
             flags ^= _BV(F_PATTERN_BIT);
-            fade_step = BRIGHT_OFF;
+            fade_step = 0;
           }
+          // fade slower when dim, faster when bright
           if( flags & _BV(F_PATTERN_BIT) ) {
-            ledA_bright = (BRIGHT_OFF - fade_step) + bright_val_cache;
-            ledB_bright = fade_step;
+            if( !(PIND & _BV(PIN_BLINK)) ) {
+              // linear fade
+              ledA_bright = fade_step + bright_val;
+              ledB_bright = BRIGHT_OFF - fade_step;
+            } else {
+              // quadratic fade
+              ledA_bright = sqrt((double)total_steps * (double)fade_step) + bright_val;
+              ledB_bright = sqrt(((double)total_steps * (double)total_steps) - 
+                    ((double)total_steps * (double)fade_step)) + bright_val;
+            }
           } else {
-            ledA_bright = fade_step;
-            ledB_bright = (BRIGHT_OFF - fade_step) + bright_val_cache;
+            if( !(PIND & _BV(PIN_BLINK)) ) {
+              // linear fade
+              ledA_bright = BRIGHT_OFF - fade_step;
+              ledB_bright = fade_step + bright_val;
+            } else {
+              // quadratic fade
+              ledA_bright = sqrt(((double)total_steps * (double)total_steps) - 
+                    ((double)total_steps * (double)fade_step)) + bright_val;
+              ledB_bright = sqrt((double)total_steps * (double)fade_step) + bright_val;
+            }
           }
-          fade_step--;
+          fade_step++;
         }
-        if( flags & _BV(F_MODE_CHANGED) ) break;
+        //if( flags & _BV(F_MODE_CHANGED) ) break;
       }
 
 // blink setup //
