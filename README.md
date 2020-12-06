@@ -1,6 +1,11 @@
 # tree
-Code for a blinky palm tree. Check out [avr-libc] (https://nongnu.org/avr-libc/)
-for the libs I use.
+Code for a blinky palm tree, which is really just a long strip of fairy lights
+bent up in the shape of a palm tree. The fairy lights are wired as a bunch of
+parallel LEDs with alternating polarity, so by switching the polarity, you
+switch the set of lights that are lit. Poke some MOSFETs into an ATMEGA328 and
+you have yourself some good old-fashioned blinkenlight!
+
+Check out [avr-libc] (https://nongnu.org/avr-libc/) for the libs I use.
 
 # dimming profiles
 I decided I didn't like a strictly linear dim, so I played around with some
