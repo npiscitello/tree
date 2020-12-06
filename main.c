@@ -1,33 +1,32 @@
 #include "avr/io.h"
 #include "avr/interrupt.h"
-#include "math.h"
+#include "fade_table.h"
 
-// min/max number of ticks for timer1
+// timing data for timer1 (driving blinking/fading speed)
 #define BLINK_DELAY_MIN   (7812.5 * 0.075)  // 0.075 sec/blink
 #define BLINK_DELAY_MAX   (7812.5 * 2)      // 2 sec/blink
-#define FADE_DELAY_MULT   15                 // we multiply the delay val by
+#define FADE_DELAY_MULT   15                // we multiply the delay val by
                                             // this to get the total fade time
                                             // in milliseconds
 #define FADE_DURATION_MIN 300               // minimum full fade duration, ms
-// duration max = FADE_DELAY_MULT * maximum bright_val (256)
+// duration max = FADE_DURATION_MIN + FADE_DELAY_MULT * maximum bright_val (256)
 #define FADE_TMR_FREQ     31250             // timer1 freq for fade ops
 #define DELAY_RES         (uint16_t)256     // number of possible values
                                             // for the delay variable
 
+// in/out definitions
 #define PORT_LEDB     PORTD5
 #define DD_LEDB       DDD5
-
 #define PORT_LEDA     PORTD6
 #define DD_LEDA       DDD6
-
 #define PORT_FADE     PORTD2
 #define DD_FADE       DDD2
 #define PIN_FADE      PIND2
-
 #define PORT_BLINK    PORTD3
 #define DD_BLINK      DDD3
 #define PIN_BLINK     PIND3
 
+// so we don't waste a whole byte every time we need a bool
 volatile uint8_t flags = 0x00;
 #define F_MODE_CHANGED    7
 #define F_TIMER1_TRIG     6
@@ -35,6 +34,7 @@ volatile uint8_t flags = 0x00;
 #define F_LED_BANK        4
 #define F_PATTERN_BIT     3
 
+// ADC buffers
 // PWM is inverting, so 0 = full bright, 255 = off
 #define BRIGHT_OFF  255
 volatile uint8_t bright_val = BRIGHT_OFF;
@@ -56,8 +56,6 @@ ISR(TIMER0_OVF_vect) {
   // We're splitting time between the LED strings - each string does one
   // on/off cycle then spends an entire PWM period off while the other
   // string does its cycle. This effectively halves the PWM freq.
-  // We use inverting mode so the bank doesn't get turned on momentarily during
-  // the swap.
   if( flags & _BV(F_LED_BANK) ) {
     OCR0A = BRIGHT_OFF;
     OCR0B = ledB_bright;
@@ -127,7 +125,8 @@ int main(void) {
   ADCSRA |= _BV(ADEN);
 
   // set up PWM on timer 0
-  // fast PWM, 256 bit resolution, both outputs inverting
+  // fast PWM, 256 bit resolution, both outputs inverting (inverting allows us
+  // to turn an output completely off using only the OCR0X register)
   TCCR0A = _BV(WGM01) | _BV(WGM00) |
     _BV(COM0A1) | _BV(COM0A0) | _BV(COM0B1) | _BV(COM0B0);
   // 8MHz System Clock
@@ -183,7 +182,8 @@ int main(void) {
           total_steps = BRIGHT_OFF - bright_val;
           // Constant time fade - fade takes the same amount of time regardless
           // of brightness, meaning slow, dim fades will have low resolution.
-          // This means the number of ticks per fade step is variable.
+          // This also means the number of ticks per fade step depends on both
+          // the desired speed and the desired peak brightness.
           OCR1A = FADE_TMR_FREQ * 
             (FADE_DURATION_MIN + ((uint16_t)delay_val * FADE_DELAY_MULT)) / 
             total_steps;
@@ -199,33 +199,17 @@ int main(void) {
             flags ^= _BV(F_PATTERN_BIT);
             fade_step = 0;
           }
-          // fade slower when dim, faster when bright
+          // fade according to a pre-calculated profile
           if( flags & _BV(F_PATTERN_BIT) ) {
-            if( !(PIND & _BV(PIN_BLINK)) ) {
-              // linear fade
-              ledA_bright = fade_step + bright_val;
-              ledB_bright = BRIGHT_OFF - fade_step;
-            } else {
-              // quadratic fade
-              ledA_bright = sqrt((double)total_steps * (double)fade_step) + bright_val;
-              ledB_bright = sqrt(((double)total_steps * (double)total_steps) - 
-                    ((double)total_steps * (double)fade_step)) + bright_val;
-            }
+            ledA_bright = get_brightness(CIRCULAR_MOD, total_steps-fade_step);
+            ledB_bright = get_brightness(CIRCULAR_MOD, fade_step);
           } else {
-            if( !(PIND & _BV(PIN_BLINK)) ) {
-              // linear fade
-              ledA_bright = BRIGHT_OFF - fade_step;
-              ledB_bright = fade_step + bright_val;
-            } else {
-              // quadratic fade
-              ledA_bright = sqrt(((double)total_steps * (double)total_steps) - 
-                    ((double)total_steps * (double)fade_step)) + bright_val;
-              ledB_bright = sqrt((double)total_steps * (double)fade_step) + bright_val;
-            }
+            ledA_bright = get_brightness(CIRCULAR_MOD, fade_step);
+            ledB_bright = get_brightness(CIRCULAR_MOD, total_steps-fade_step);
           }
           fade_step++;
         }
-        //if( flags & _BV(F_MODE_CHANGED) ) break;
+        if( flags & _BV(F_MODE_CHANGED) ) break;
       }
 
 // blink setup //

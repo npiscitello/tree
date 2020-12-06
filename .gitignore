@@ -8,3 +8,6 @@
 *.o
 *.sym
 .dep/
+
+# LibreOffice
+.~lock.*.ods#
