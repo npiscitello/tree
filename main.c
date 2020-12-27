@@ -116,29 +116,20 @@ int main(void) {
 
   // set up ADC in oneshot mode and left adjust the result
   ADMUX = _BV(ADLAR);
-  // 8MHz System Clock
-  // sys/64, 125kHz tick
-  //ADCSRA = _BV(ADIE) | _BV(ADPS2) | _BV(ADPS1);
-  // 2MHz System Clock
   // sys/16, 125kHz tick
   ADCSRA = _BV(ADIE) | _BV(ADPS2);
   ADCSRA |= _BV(ADEN);
 
   // set up PWM on timer 0
-  // fast PWM, 256 bit resolution, both outputs inverting (inverting allows us
+  // fast PWM, 8 bit resolution, both outputs inverting (inverting allows us
   // to turn an output completely off using only the OCR0X register)
   TCCR0A = _BV(WGM01) | _BV(WGM00) |
     _BV(COM0A1) | _BV(COM0A0) | _BV(COM0B1) | _BV(COM0B0);
-  // 8MHz System Clock
-  // sys/64, 125kHz clock, ~488Hz PWM freq, ~244 effective PWM freq
-  // (see ISR, PWM freq is halved because we split time between banks)
-  //TCCR0B = _BV(CS01) | _BV(CS00);
-  // 2MHz System Clock
   // sys/8, 250kHz clock, ~976Hz PWM freq, ~488 effective PWM freq
   // (see ISR, PWM freq is halved because we split time between banks)
   TCCR0B = _BV(CS01);               // sys/8
   // interrupt on every PWM cycle
-  TIMSK0 |= _BV(TOIE0);
+  TIMSK0 = _BV(TOIE0);
 
   // set up pattern timing on timer1
   // compare match interrupt
@@ -149,12 +140,6 @@ int main(void) {
   TCCR2A = _BV(WGM21);
   // enable interrupts
   TIMSK2 = _BV(OCIE2A);
-  // 8MHz System Clock
-  // sys/64, OCR2A of 63 yields ~2000 triggers/sec
-  // At the ADC clock of 125kHz, that allows 63 ADC clocks per trigger
-  //OCR2A = 63;
-  //TCCR2B = _BV(CS22);
-  // 2MHz System Clock
   // sys/32, 62.5kHz tick, OCR2A of 31 yields ~2016 triggers/sec
   // At the ADC clock of 125kHz, that allows 62 ADC clocks per trigger
   OCR2A = 31;
@@ -163,7 +148,6 @@ int main(void) {
   while( 1 ) {
 // fade setup //
     if( !(PIND & _BV(PIN_FADE)) ) {
-      // 2MHz System Clock
       // timer 1 resets on every brightness level change (256 per fade), 
       // so we run it fast
       // CTC, sys/64, 31.25kHz tick, max delay possible 0.5 sec (537 sec fade)
@@ -214,11 +198,6 @@ int main(void) {
 
 // blink setup //
     } else if( !(PIND & _BV(PIN_BLINK)) ) {
-      // 8MHz System Clock
-      // timer 1 resets when the LED bank should switch, so we run it slow
-      // CTC, sys/1024, 7812.5Hz tick, max delay possible 8.39 secs
-      //TCCR1B = _BV(WGM12) | _BV(CS12) | _BV(CS10);
-      // 2MHz System Clock
       // timer 1 resets when the LED bank should switch, so we run it very slow
       // CTC, sys/256, 7812.5Hz tick, max delay possible 8.39 secs
       TCCR1B = _BV(WGM12) | _BV(CS12);
